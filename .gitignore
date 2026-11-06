@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.prisma/
+google-services.json
+firebase-adminsdk.json
+*firebase-adminsdk*.json
+GoogleService-Info.plist
+*.pem
+*.key
+secrets/
+.env.local
+.env.production

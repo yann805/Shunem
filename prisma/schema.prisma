@@ -1,0 +1,497 @@
+// ============================================================================
+// Shunem — Resting Place | Prisma schema (PostgreSQL / Supabase)
+// Enterprise real-estate marketplace & intermediation platform.
+// SRS §58 (entities), §87-91 (integrity/transactions/indexing), §99 (privacy).
+// ============================================================================
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+// ---- Enums (SRS §5, §12, §14, §15, §23, §24, §31-34, §65) ------------------
+enum UserRole {
+  visitor
+  seeker
+  owner
+  admin
+  super_admin
+}
+enum OwnerType {
+  individual
+  organization
+}
+enum OwnerStatus {
+  pending
+  under_review
+  approved
+  rejected
+  suspended
+  deactivated
+}
+enum VerificationStatus {
+  not_verified
+  pending
+  under_review
+  verified
+  rejected
+  suspended
+}
+enum PropertyStatus {
+  draft
+  submitted
+  under_review
+  approved
+  published
+  available
+  reserved
+  rented
+  sold
+  temporarily_unavailable
+  suspended
+  rejected
+  archived
+}
+enum TransactionType {
+  sale
+  long_rent
+  short_rent
+  temporary
+  commercial_rent
+}
+enum FurnishingType {
+  furnished
+  unfurnished
+  semi_furnished
+}
+enum RequestStatus {
+  submitted
+  received
+  under_review
+  owner_contacted
+  visit_proposed
+  visit_scheduled
+  completed
+  rejected
+  cancelled
+}
+enum VisitStatus {
+  requested
+  received
+  under_coordination
+  proposed
+  confirmed
+  completed
+  rejected
+  cancelled
+  rescheduled
+}
+enum BookingStatus {
+  requested
+  under_review
+  confirmed
+  rejected
+  cancelled
+  completed
+  expired
+}
+enum PaymentStatus {
+  initiated
+  pending
+  processing
+  confirmed
+  failed
+  cancelled
+  refunded
+}
+enum NotificationCategory {
+  message
+  property
+  visit
+  booking
+  payment
+  owner
+  security
+  promotional
+  system
+}
+enum MediaType {
+  photo
+  video
+  document
+}
+
+// ---- Users & profiles (SRS §42) -------------------------------------------
+model User {
+  id                String        @id @default(uuid()) @db.Uuid
+  email             String        @unique
+  role              UserRole      @default(visitor)
+  displayName       String?       @map("display_name")
+  photoUrl          String?       @map("photo_url")
+  phone             String?
+  city              String?
+  language          String        @default("en")
+  permissions       String[]      @default([])
+  notificationPrefs Json          @default("{\"messages\":true,\"property_updates\":true,\"visit_updates\":true,\"booking_updates\":true,\"payment_notifications\":true,\"promotional\":false}") @map("notification_prefs")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime?     @updatedAt @map("updated_at")
+
+  seeker            Seeker?
+  owner             Owner?
+  properties        Property[]
+  favorites         Favorite[]
+  requests          InterestRequest[]
+  visitsSeeker      Visit[]       @relation("Visit_seeker")
+  visitsOwner       Visit[]       @relation("Visit_owner")
+  bookingsSeeker    Booking[]     @relation("Booking_seeker")
+  bookingsOwner     Booking[]     @relation("Booking_owner")
+  payments          Payment[]
+  notifications     Notification[]
+
+  @@map("users")
+}
+
+model Seeker {
+  userId      String   @id @db.Uuid @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location    String?
+  preferences Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("seekers")
+}
+
+model Owner {
+  userId             String             @id @db.Uuid @map("user_id")
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type               OwnerType          @default(individual)
+  status             OwnerStatus        @default(pending)
+  contactInfo        Json?              @map("contact_info")
+  location           String?
+  verificationStatus VerificationStatus @default(not_verified) @map("verification_status")
+  acceptedTermsVer   String?            @map("accepted_terms_version")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  termsAcceptances   TermsAcceptance[]
+
+  @@map("owners")
+}
+
+// ---- Catalog (SRS §13, §14, §19, §49 — enterprise-configurable) -----------
+model Category {
+  id      String   @id
+  nameEn  String   @map("name_en")
+  nameFr  String   @map("name_fr")
+  icon    String?
+  types   String[] @default([])
+  properties Property[]
+
+  @@map("categories")
+}
+model Amenity {
+  id      String   @id
+  nameEn  String   @map("name_en")
+  nameFr  String   @map("name_fr")
+  icon    String?
+  group   String?  @map("group")
+  properties Property[]
+
+  @@map("amenities")
+}
+model TransactionTypeConfig {
+  id      String  @id
+  nameEn  String? @map("name_en")
+  nameFr  String? @map("name_fr")
+  icon    String?
+
+  @@map("transaction_types")
+}
+
+// ---- Properties (SRS §16-24) ----------------------------------------------
+// CRITICAL: precise location fields (quarter/street/landmark/lat/lng) are
+// ADMIN-ONLY. Enforced by: RLS (sql/rls.sql), the public_properties view, AND
+// the PropertyService output mapper (defense in depth, SRS §99).
+model Property {
+  id             String            @id @default(uuid()) @db.Uuid
+  ownerId        String?           @map("owner_id") @db.Uuid
+  owner          User?             @relation(fields: [ownerId], references: [id])
+  title          String
+  categoryId     String?           @map("category_id")
+  category       Category?         @relation(fields: [categoryId], references: [id])
+  typeName       String?           @map("type_name")
+  transactionType TransactionType  @default(sale) @map("transaction_type")
+  furnishingType FurnishingType?   @map("furnishing_type")
+  price          Decimal           @db.Decimal(14, 2)
+  pricePeriod    String?           @map("price_period")
+  status         PropertyStatus    @default(draft)
+  verification   VerificationStatus @default(not_verified)
+  description    String?
+  bedrooms       Int?
+  bathrooms      Int?
+  toilets        Int?
+  livingRooms    Int?              @map("living_rooms")
+  kitchens       Int?
+  floors         String?
+  surface        Int?
+  landArea       Int?              @map("land_area")
+  parking        Int?
+  amenityIds     String[]          @default([]) @map("amenity_ids")
+  amenities      Amenity[]
+  rating         Decimal?          @db.Decimal(2, 1) @default(0)
+  featured       Boolean           @default(false)
+
+  // PUBLIC location (returned to everyone)
+  country        String            @default("Cameroon")
+  region         String?
+  department     String?
+  city           String
+  neighborhood   String?
+  // ADMIN-ONLY location (SRS §99 — stripped from public responses)
+  quarter        String?
+  street         String?
+  landmark       String?
+  latitude       Decimal?          @db.Decimal(9, 6)
+  longitude      Decimal?          @db.Decimal(9, 6)
+
+  media          PropertyMedia[]
+  documents      PropertyDocument[]
+  favorites      Favorite[]
+  requests       InterestRequest[]
+  visits         Visit[]
+  bookings       Booking[]
+  payments       Payment[]
+  reviews        Review[]
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime?         @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([transactionType])
+  @@index([city])
+  @@index([ownerId])
+  @@index([featured])
+  @@index([verification])
+  @@map("properties")
+}
+
+model PropertyMedia {
+  id         String    @id @default(uuid()) @db.Uuid
+  propertyId String    @map("property_id") @db.Uuid
+  property   Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  url        String
+  type       MediaType @default(photo)
+  isCover    Boolean   @default(false) @map("is_cover")
+  width      Int?
+  height     Int?
+  size       Int?
+
+  @@index([propertyId])
+  @@map("property_media")
+}
+model PropertyDocument {
+  id         String   @id @default(uuid()) @db.Uuid
+  propertyId String   @map("property_id") @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  url        String
+  kind       String?
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  @@index([propertyId])
+  @@map("property_documents")
+}
+model Favorite {
+  userId     String   @map("user_id") @db.Uuid
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  propertyId String   @map("property_id") @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@id([userId, propertyId])
+  @@index([propertyId])
+  @@map("favorites")
+}
+
+// ---- Mediation flows (SRS §30-34) -----------------------------------------
+model InterestRequest {
+  id            String         @id @default(uuid()) @db.Uuid
+  propertyId    String         @map("property_id") @db.Uuid
+  property      Property       @relation(fields: [propertyId], references: [id])
+  seekerId      String         @map("seeker_id") @db.Uuid
+  seeker        User           @relation(fields: [seekerId], references: [id])
+  status        RequestStatus  @default(submitted)
+  message       String?
+  preferredDate DateTime?      @map("preferred_date")
+  preferredTime String?        @map("preferred_time")
+  coordinatorId String?        @map("coordinator_id") @db.Uuid
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime?      @updatedAt @map("updated_at")
+
+  @@index([seekerId])
+  @@index([propertyId])
+  @@map("interest_requests")
+}
+model Visit {
+  id            String      @id @default(uuid()) @db.Uuid
+  propertyId    String      @map("property_id") @db.Uuid
+  property      Property    @relation(fields: [propertyId], references: [id])
+  seekerId      String      @map("seeker_id") @db.Uuid
+  seeker        User         @relation("Visit_seeker", fields: [seekerId], references: [id])
+  ownerId       String      @map("owner_id") @db.Uuid
+  owner         User         @relation("Visit_owner", fields: [ownerId], references: [id])
+  scheduledDate DateTime    @map("scheduled_date")
+  time          String?
+  status        VisitStatus @default(requested)
+  coordinatedBy String?     @map("coordinated_by")
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@index([seekerId])
+  @@index([ownerId])
+  @@map("visits")
+}
+model Booking {
+  id          String         @id @default(uuid()) @db.Uuid
+  propertyId  String         @map("property_id") @db.Uuid
+  property    Property       @relation(fields: [propertyId], references: [id])
+  seekerId    String         @map("seeker_id") @db.Uuid
+  seeker      User           @relation("Booking_seeker", fields: [seekerId], references: [id])
+  ownerId     String         @map("owner_id") @db.Uuid
+  owner       User           @relation("Booking_owner", fields: [ownerId], references: [id])
+  startDate   DateTime       @map("start_date")
+  endDate     DateTime       @map("end_date")
+  occupants   Int            @default(1)
+  nights      Int            @default(0)
+  price       Decimal        @db.Decimal(14, 2)
+  fees        Decimal        @db.Decimal(14, 2) @default(0)
+  total       Decimal        @db.Decimal(14, 2)
+  status      BookingStatus  @default(requested)
+  createdAt   DateTime       @default(now()) @map("created_at")
+  payments    Payment[]
+
+  @@index([seekerId])
+  @@index([ownerId])
+  @@index([propertyId])
+  @@map("bookings")
+}
+// Payments: amounts as Decimal (SRS §147 — no float financial math).
+model Payment {
+  id               String         @id @default(uuid()) @db.Uuid
+  bookingId        String         @map("booking_id") @db.Uuid
+  booking          Booking        @relation(fields: [bookingId], references: [id])
+  userId           String         @map("user_id") @db.Uuid
+  user             User           @relation(fields: [userId], references: [id])
+  propertyId       String         @map("property_id") @db.Uuid
+  property         Property       @relation(fields: [propertyId], references: [id])
+  amount           Decimal        @db.Decimal(14, 2)
+  currency         String         @default("XAF")
+  provider         String
+  reference        String         @unique
+  externalReference String?       @map("external_reference")
+  status           PaymentStatus  @default(initiated)
+  date             DateTime       @default(now())
+  createdAt        DateTime       @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([bookingId])
+  @@index([propertyId])
+  @@map("payments")
+}
+
+// ---- Notifications (SRS §37, §101, §104) ----------------------------------
+model Notification {
+  id         String               @id @default(uuid()) @db.Uuid
+  userId     String?              @map("user_id") @db.Uuid
+  user       User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toRole     UserRole?            @map("to_role")
+  category   NotificationCategory @default(system)
+  title      String
+  body       String
+  read       Boolean              @default(false)
+  linkRoute  String?              @map("link_route")
+  linkId     String?              @map("link_id")
+  params     Json                 @default("{}")
+  createdAt  DateTime             @default(now()) @map("created_at")
+
+  @@index([userId, read])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ---- Owner terms (SRS §11, §50 — versioned) -------------------------------
+model OwnerTerms {
+  version          String             @id
+  sections         Json
+  publishedAt      DateTime           @default(now()) @map("published_at")
+  mandatory        Boolean            @default(true)
+  acceptedByCount  Int                @default(0) @map("accepted_by_count")
+  status           String             @default("active")
+  termsAcceptances TermsAcceptance[]
+
+  @@map("owner_terms")
+}
+model TermsAcceptance {
+  ownerId   String     @map("owner_id") @db.Uuid
+  owner     Owner      @relation(fields: [ownerId], references: [userId], onDelete: Cascade)
+  version   String
+  terms     OwnerTerms @relation(fields: [version], references: [version])
+  acceptedAt DateTime  @default(now()) @map("accepted_at")
+
+  @@id([ownerId, version])
+  @@map("terms_acceptances")
+}
+
+// ---- Audit (SRS §109) — append-only ---------------------------------------
+model AuditRecord {
+  id        String   @id @default(uuid()) @db.Uuid
+  actor     String
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  result    String
+  metadata  Json     @default("{}")
+  timestamp DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@map("audit_records")
+}
+
+// ---- Reviews (SRS §35) & Reports (SRS §36) --------------------------------
+model Review {
+  id          String   @id @default(uuid()) @db.Uuid
+  propertyId  String   @map("property_id") @db.Uuid
+  property    Property @relation(fields: [propertyId], references: [id])
+  userId      String   @map("user_id") @db.Uuid
+  rating      Int
+  comment     String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId])
+  @@map("reviews")
+}
+model Report {
+  id         String   @id @default(uuid()) @db.Uuid
+  type       String
+  propertyId String?  @map("property_id") @db.Uuid
+  reporterId String?  @map("reporter_id") @db.Uuid
+  message    String
+  status     String   @default("open")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([status])
+  @@map("reports")
+}
+
+// ---- Refresh tokens (SRS §86) ---------------------------------------------
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
